@@ -1,0 +1,1551 @@
+---
+title: "Untitled"
+author: "Yulin Pan"
+date: "8/4/2023"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+topcat=5
+```
+
+#Import Packages
+```{r}
+#rm(list = ls())
+invisible(library(splitstackshape))
+invisible(library(lubridate))
+invisible(library(tidyverse))
+invisible(library(ggplot2))
+invisible(library(prophet))
+invisible(library(caret))
+invisible(library(e1071))
+invisible(library(dplyr))
+invisible(library(readxl))
+invisible(library(timetk))
+invisible(library(forecast))
+#invisible(library(TStools))
+invisible(library(ggplot2))
+invisible(library(tidyr))
+invisible(library(reshape2))
+invisible(library(readxl))
+invisible(library(openxlsx))
+#invisible(library(DomoR))
+invisible(library(googlesheets4))
+invisible(library(splitstackshape))
+invisible(library(data.table))
+# invisible(init('noblehousefurniture', '50976e5e59fd0e36ddc611b341c71eebcc73e5d0da573d67'))
+# 
+# gs4_auth(email = "yulinp@noblehousefurniture.com")
+```
+
+#Latest SKU HM map
+```{r}
+Stockey_Info <- read_excel("C:/Users/Yulin Pan/Downloads/Stockey Info - WebPO.xlsx", 
+    col_types = c("text", "text", "text", 
+        "text", "text", "text", "text", "text", 
+        "text", "text", "text", "text", "text", 
+        "text", "date", "date", "date", "text", 
+        "text", "numeric", "numeric", "numeric", 
+        "numeric", "text", "date", "text", 
+        "text"))%>%
+  mutate(HMNUM1  = gsub("- 50K","-50K" ,HMNUM1))
+
+assortment_in <- read_excel(paste0("C:/Users/Yulin Pan/Desktop/woh calculation files/WOH 9.22/Indoor Assortment Report-2023.09.28.xlsx"), sheet = "Forecast by StockKey - PCS", 
+     skip = 4)%>%
+  select(StockKey, `First Cost`)
+assortment_out <- read_excel(paste0("C:/Users/Yulin Pan/Desktop/woh calculation files/WOH 9.22/Outdoor Assortment 9.28.2023.xlsx"), sheet = "Forecast by StockKey - PCS",
+     skip = 3)%>%
+  mutate(`HMNum 1` = gsub("- 50k", "-50k", `HMNum 1`))%>%
+  rename(StockKey = stockkey,
+         `First Cost` = `Last First Cost`)%>%
+  select(StockKey, `First Cost`)
+Assort<-rbind(assortment_in, assortment_out)
+
+#Read automatically downloaded SKU to HM map
+# DOMO_SKU_HM1 <- read_excel("C:/Users/Yulin Pan/Downloads/SKU to HM Map 2023-08-09.xlsx")
+DOMO_SKU_HM <- read_csv("C:/Users/Yulin Pan/Desktop/SKU to HM/Master Mapping List.csv")%>%
+  filter(!is.na(`SKU_stockey_sorted`))%>%
+  mutate(`master sku`= as.character(`master sku`))%>%
+  rename(`mastersku` = `master sku`,
+         `group stockkey` = SKU_stockey_sorted)%>%
+  mutate(SKU_stockey_sorted = `group stockkey`)%>%
+  left_join(Assort, by=c("HM_stockey" = "StockKey"))%>%
+  left_join(Stockey_Info[c(2,20)], by=c("HM_stockey" = "Stockey"))%>%
+  mutate(`HM Latest First Cost` = ifelse(!is.na(`First Cost`), `First Cost`, LastestFirstCost))%>%
+  mutate(`HM Latest First Cost in SKU` = `HM Latest First Cost`*`HM_pcs_needed`)%>%
+  group_by(`group stockkey`, channelname, sku)%>%
+  mutate(`SKU Latest First Cost` = sum(`HM Latest First Cost in SKU`, na.rm = TRUE))%>%
+  ungroup()%>%
+  mutate(`HM to SKU First Cost %` = `HM Latest First Cost in SKU`/`SKU Latest First Cost`)%>%
+  mutate(`HM to SKU First Cost %` = ifelse(is.na(`HM to SKU First Cost %`), 0, `HM to SKU First Cost %`))
+
+#Unique Master SKU to HM
+Non_dup_MSKU_HM <- DOMO_SKU_HM%>%
+  filter(!grepl(".CA", channelname, fixed = TRUE))%>%
+  filter(!grepl(".UK", channelname, fixed = TRUE))%>%
+  mutate(test = paste0(`mastersku`, `hm#`))%>%
+  filter(!duplicated(test))
+
+#Unique HMNUM to HM
+Non_dup_HMNUM_HM <- DOMO_SKU_HM%>%
+  mutate(test = paste0(hmnum, `hm#`))%>%
+  filter(!duplicated(test))%>%
+  mutate(hmnum = toupper(hmnum))
+
+#Unique SKU_Sorted to HMNUM
+Non_dup_SKUS_HM <- DOMO_SKU_HM%>%
+  mutate(test = paste0(SKU_stockey_sorted, `hm#`))%>%
+  filter(!duplicated(test))%>%
+  mutate(hmnum = toupper(hmnum))
+
+#Unique SKU to HM
+Non_dup_SKU_HM <- DOMO_SKU_HM%>%
+  filter(!grepl(".CA", channelname, fixed = TRUE))%>%
+  filter(!grepl(".UK", channelname, fixed = TRUE))%>%
+  mutate(test = paste0(sku, `hm#`))%>%
+  filter(!duplicated(test))
+
+#Unique SKU+AMZ Channel
+Non_dup_SKU_CHL <- DOMO_SKU_HM%>%
+  filter(!grepl(".CA", channelname, fixed = TRUE))%>%
+  filter(!grepl(".UK", channelname, fixed = TRUE))%>%
+  filter(grepl("AMAZON", channelname))%>%
+  mutate(test = paste0(sku, channelname))%>%
+  filter(!duplicated(test))
+
+#Unique Master SKU
+Non_dup_MSKU <- DOMO_SKU_HM%>%
+  filter(!duplicated(mastersku))
+
+#Unique SKU
+Non_dup_SKU <- DOMO_SKU_HM%>%
+  filter(!duplicated(sku))
+
+#Unique SKU sotkcey sorted
+Non_dup_SKUS <- DOMO_SKU_HM%>%
+  filter(!duplicated(SKU_stockey_sorted))
+
+#Unique HMNUM
+Non_dup_HMNUM <- DOMO_SKU_HM%>%
+  filter(!duplicated(hmnum))
+
+#Unique Stockey
+Non_dup_Stockey <- DOMO_SKU_HM%>%
+  filter(!duplicated(`group stockkey`))
+```
+
+```{r}
+SKU_Ordered_Sales_raw <- read.csv("C:/Users/Yulin Pan/Downloads/SKU Ordered Sales (48).csv")
+
+current_month <- format(Sys.Date(), "%Y-%m")
+# Calculate the start and end dates based on the current month
+end_date <- as.Date(paste0(substr(current_month, 1, 4), "-", substr(current_month, 6, 7), "-01"))-1
+start_date <- end_date-days(364)
+
+#SKU Sales
+SKU_Ordered_Sales <- SKU_Ordered_Sales_raw%>%
+  mutate(orderdate = as.character(orderdate), 
+         minshipdate..margin.verified. = as.character(minshipdate..margin.verified.), 
+         minshipdate = as.character(minshipdate),
+         merchantname = as.character(merchantname),
+         master.sku = as.character(master.sku), 
+         stoceky = as.character(stockey),
+         hmnum = toupper(hmnum))%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  left_join(Non_dup_SKU[,c(1,2)], by = c("skuorder" = "sku"))%>%
+  left_join(Non_dup_HMNUM[,c(1,5)], by = c("hmnum" = "hmnum"))%>%
+  left_join(Non_dup_Stockey[,c(1,4)], by = c("stockey" = "group stockkey"))%>%
+  mutate(master.sku = ifelse(is.na(master.sku), 
+                             ifelse(is.na(mastersku.x), 
+                                    ifelse(is.na(mastersku.y), mastersku, mastersku.y), mastersku.x),
+                             master.sku))%>%
+  mutate(orderdate = as.Date(orderdate, format = "%Y-%m-%d"), 
+         verified.shipdate = as.Date(minshipdate..margin.verified., format = "%Y-%m-%d"), 
+         shipdate = as.Date(minshipdate, format = "%Y-%m-%d"))%>%
+  select(orderdate, verified.shipdate, shipdate, merchantname, master.sku, skuorder, stockey, hmnum, category1,category2, category3.2, pieces.sold, first.cost, grosssales, net.sales, Landed.Cost, Contribution.Margin...)
+
+#Updated HM Sales
+HM_Ordered_Sales <- Non_dup_MSKU_HM%>%
+  full_join(SKU_Ordered_Sales, by = c("mastersku" = "master.sku"))%>%
+  mutate(`HM pieces sold` =  ifelse( `HM_Count`!= 1, pieces.sold*`HM_pcs_needed`, pieces.sold), 
+         `HM First Cost` = first.cost*`HM to SKU First Cost %`,
+         `HM Gross Sales` = grosssales*`HM to SKU First Cost %`,
+         `HM Net Sales` = net.sales*`HM to SKU First Cost %`,
+         `HM Landed Cost` = Landed.Cost*`HM to SKU First Cost %`,
+         `HM Contribution Margin` = Contribution.Margin...*`HM to SKU First Cost %`)%>%
+  # filter(between(orderdate, as.Date("2023-05-01"), as.Date("2023-05-31")),grepl("350960", stockey, fixed = TRUE), merchantname == "HOMEDEPOT.COM")
+  rename(`SKU hmnum` = hmnum.x,
+         `SKU pieces sold` = pieces.sold, 
+         `SKU First Cost` = first.cost, 
+         `SKU Gross Sales` = grosssales, 
+         `SKU Net Sales` = net.sales,
+         `SKU Landed Cost` = Landed.Cost,
+         `SKU Contribution Margin` = Contribution.Margin...)%>%
+  mutate(`MasterSKU` = mastersku, `SKU_stockey` = `group stockkey`)%>%
+  select(orderdate, shipdate, `MasterSKU`, merchantname,
+         `SKU_stockey`, `SKU_stockey_sorted`, `SKU hmnum`, `HM_stockey`, `HM_Count`, `HM_pcs_needed`, 
+         `SKU Latest First Cost`, `HM Latest First Cost`, `HM to SKU First Cost %`,
+         `SKU pieces sold`, `SKU First Cost`, `SKU Gross Sales`,`SKU Net Sales`,`SKU Landed Cost`, `SKU Contribution Margin`, 
+         `HM pieces sold`, `HM First Cost`, `HM Gross Sales`,`HM Net Sales`, `HM Landed Cost`, `HM Contribution Margin`)%>%
+  mutate(`Master SKU` = as.double(`MasterSKU`))%>%
+  filter(!is.na(orderdate))%>%
+  arrange(orderdate, merchantname, `MasterSKU`)%>%
+  left_join(Stockey_Info[,c(2,5,7,11)], by = c("HM_stockey"= "Stockey"))
+
+#US Monthly HM Sales
+Latest_Sale <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  group_by(HM_stockey, orderdate)%>%
+  summarise_at(vars(`HM pieces sold`), sum)%>%
+  ungroup()
+
+#US Monthly C1 Sales
+C1_Monthly_Sales <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  #filter(`Category3` == "FIRE PIT")%>%
+  filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), month(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+  arrange(Category1, desc(Date))
+```
+
+```{r special category3}
+#special category
+C1_Monthly_Sales_XMAS <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(`Category3` == "CHRISTMAS DECORATION")%>%
+  #filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), month(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+  arrange(Category1, desc(Date))
+
+C1_Monthly_Sales_FIREPIT <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(`Category3` == "FIRE PIT")%>%
+  #filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), month(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+  arrange(Category1, desc(Date))
+
+C1_Monthly_Sales_FIREPLACE <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(`Category3` == "FIREPLACE")%>%
+  #filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), month(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+  arrange(Category1, desc(Date))
+
+C1_Monthly_Sales_BEANBAG <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(`Category3` == "BEAN BAG")%>%
+  #filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), month(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+  arrange(Category1, desc(Date))
+```
+
+```{r indoor top category3.2}
+#top category
+
+top_category_in<-SKU_Ordered_Sales%>%
+  filter(orderdate<=end_date & orderdate >= start_date)%>%
+  filter(`category3.2` != "X-MAS TREES" & `category3.2` != "FIREPLACE" & `category3.2` != "FIRE PIT" & `category3.2` != "BEANBAGS / POUFS")%>%
+  group_by(category1, category3.2)%>%
+  summarise(first.cost = sum(first.cost))%>%
+  filter(category1 == "INDOOR")%>%
+  top_n(n = topcat, wt = first.cost)%>%
+  arrange(category1, -first.cost)%>%
+  ungroup()%>%
+  select(category3.2)
+
+df_names_in <- character()
+
+for (i in 1:nrow(top_category_in)) {
+  filtered_data <- HM_Ordered_Sales %>%
+    filter(!grepl(".CA", merchantname, fixed = TRUE)) %>%
+    filter(!grepl(".UK", merchantname, fixed = TRUE)) %>%
+    filter(`Category3-2` == as.character(top_category_in[i,])) %>%
+    filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20"))) %>%
+    filter(between(orderdate, as.Date("2017-01-01"), end_date)) %>%
+    group_by(Category1, year(orderdate), month(orderdate)) %>%
+    summarise_at(vars(`HM First Cost`), sum) %>%
+    ungroup() %>%
+    filter(Category1 == "INDOOR") %>%
+    mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01"))) %>%
+    arrange(Category1, desc(Date))
+  
+  result_name <- paste("C1_Monthly_Sales_indoor_top", i, sep = "")
+  assign(result_name, filtered_data)
+  df_names_in <- c(df_names_in, result_name)
+}
+
+
+# C1_Monthly_Sales_indoor_top1 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_in[1,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "INDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+# 
+# C1_Monthly_Sales_indoor_top2 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_in[2,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "INDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+# 
+# C1_Monthly_Sales_indoor_top3 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_in[3,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "INDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+# 
+# C1_Monthly_Sales_indoor_top4 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_in[4,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "INDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+# 
+# C1_Monthly_Sales_indoor_top5 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_in[5,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "INDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+```
+
+```{r outdoor top category3.2}
+#top category
+
+top_category_out<-SKU_Ordered_Sales%>%
+  filter(orderdate<=end_date & orderdate >= start_date)%>%
+  filter(`category3.2` != "X-MAS TREES" & `category3.2` != "FIREPLACE" & `category3.2` != "FIRE PIT" & `category3.2` != "BEANBAGS / POUFS")%>%
+  group_by(category1, category3.2)%>%
+  summarise(first.cost = sum(first.cost))%>%
+  filter(category1 == "OUTDOOR")%>%
+  top_n(n = topcat, wt = first.cost)%>%
+  arrange(category1, -first.cost)%>%
+  ungroup()%>%
+  select(category3.2)
+
+df_names_out <- character()
+
+for (i in 1:nrow(top_category_out)) {
+  filtered_data <- HM_Ordered_Sales %>%
+    filter(!grepl(".CA", merchantname, fixed = TRUE)) %>%
+    filter(!grepl(".UK", merchantname, fixed = TRUE)) %>%
+    filter(`Category3-2` == as.character(top_category_out[i,])) %>%
+    filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20"))) %>%
+    filter(between(orderdate, as.Date("2017-01-01"), end_date)) %>%
+    group_by(Category1, year(orderdate), month(orderdate)) %>%
+    summarise_at(vars(`HM First Cost`), sum) %>%
+    ungroup() %>%
+    filter(Category1 == "OUTDOOR") %>%
+    mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01"))) %>%
+    arrange(Category1, desc(Date))
+  
+  result_name <- paste("C1_Monthly_Sales_outdoor_top", i, sep = "")
+  assign(result_name, filtered_data)
+  df_names_out <- c(df_names_out, result_name)
+}
+
+# C1_Monthly_Sales_outdoor_top1 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_out[1,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "OUTDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+# 
+# C1_Monthly_Sales_outdoor_top2 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_out[2,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "OUTDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+# 
+# C1_Monthly_Sales_outdoor_top3 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_out[3,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "OUTDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+# 
+# C1_Monthly_Sales_outdoor_top4 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_out[4,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "OUTDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+# 
+# C1_Monthly_Sales_outdoor_top5 <- HM_Ordered_Sales%>%
+#   filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+#   filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+#   filter(`Category3-2` == as.character(top_category_out[5,]))%>%
+#   filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+#   filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+#   group_by(Category1, year(orderdate), month(orderdate))%>%
+#   summarise_at(vars(`HM First Cost`), sum)%>%
+#   ungroup()%>%
+#   filter(Category1 == "OUTDOOR")%>%
+#   mutate(Date = as.Date(paste0(`year(orderdate)`,"-", `month(orderdate)`,"-01")))%>%
+#   arrange(Category1, desc(Date))
+```
+
+```{r}
+#write_xlsx(C1_Monthly_Sales,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Seasonality calculation\\Firepit seasonality.xlsx")
+#write_xlsx(C1_Weekly_Sales,"C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Seasonality calculation\\Weekly Seasonality by C1.xlsx")
+```
+
+```{r Indoor OVERALL}
+#overall seasonality  
+beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(floor_date(today(), "months")-months(12)), min(C1_Monthly_Sales$Date), by = "-1 months")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+months(11))
+
+Indoor_EMA$EMA_Weight[length(Indoor_EMA$Start_Date)] <- beta
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    Indoor_EMA$EMA_Weight[i] <- ((1-beta)^(i-1))*beta
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Monthly_Sales%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:12){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+    Indoor_EMA[j, NCOl+i]<- C1_Monthly_Sales%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), month(Date)==i)%>%
+      select(`HM First Cost`)
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(month.abb[i])
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_overall_m2<-Indoor_EMA%>%
+  mutate(Jan_sea = Jan/Indoor_Sales,
+         Feb_sea = Feb/Indoor_Sales,
+         Mar_sea = Mar/Indoor_Sales,
+         Apr_sea = Apr/Indoor_Sales,
+         May_sea = May/Indoor_Sales,
+         Jun_sea = Jun/Indoor_Sales,
+         Jul_sea = Jul/Indoor_Sales,
+         Aug_sea = Aug/Indoor_Sales,
+         Sep_sea = Sep/Indoor_Sales,
+         Oct_sea = Oct/Indoor_Sales,
+         Nov_sea = Nov/Indoor_Sales,
+         Dec_sea = Dec/Indoor_Sales)%>%
+  filter(month(End_Date)==month(today())-1)%>%
+  select(-(1:4))%>%
+  colMeans()%>%
+  as.data.frame()
+colnames(sea_overall_m2)[colnames(sea_overall_m2) == "."] <- "Normal"
+sea_overall_m2 = t(sea_overall_m2)
+```
+
+```{r Indoor XMAS}
+#xmas seasonality  
+beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(floor_date(today(), "months")-months(12)), min(C1_Monthly_Sales_XMAS$Date), by = "-1 months")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+months(11))
+
+Indoor_EMA$EMA_Weight[length(Indoor_EMA$Start_Date)] <- beta
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    Indoor_EMA$EMA_Weight[i] <- ((1-beta)^(i-1))*beta
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Monthly_Sales_XMAS%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:12){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+   a <- C1_Monthly_Sales_XMAS%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), month(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Indoor_EMA[j, NCOl+i]<-a
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(month.abb[i])
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_xmas_m2<-Indoor_EMA%>%
+  mutate(Jan_sea = Jan/Indoor_Sales,
+         Feb_sea = Feb/Indoor_Sales,
+         Mar_sea = Mar/Indoor_Sales,
+         Apr_sea = Apr/Indoor_Sales,
+         May_sea = May/Indoor_Sales,
+         Jun_sea = Jun/Indoor_Sales,
+         Jul_sea = Jul/Indoor_Sales,
+         Aug_sea = Aug/Indoor_Sales,
+         Sep_sea = Sep/Indoor_Sales,
+         Oct_sea = Oct/Indoor_Sales,
+         Nov_sea = Nov/Indoor_Sales,
+         Dec_sea = Dec/Indoor_Sales)%>%
+  filter(month(End_Date)==month(today())-1)%>%
+  select(-(1:4))%>%
+  colMeans()%>%
+  as.data.frame()
+colnames(sea_xmas_m2)[colnames(sea_xmas_m2) == "."] <- "XMAS"
+sea_xmas_m2 = t(sea_xmas_m2)
+```
+
+```{r Indoor BEANBAG}
+#beanbag seasonality  
+beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(floor_date(today(), "months")-months(12)), min(C1_Monthly_Sales_BEANBAG$Date), by = "-1 months")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+months(11))
+
+Indoor_EMA$EMA_Weight[length(Indoor_EMA$Start_Date)] <- beta
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    Indoor_EMA$EMA_Weight[i] <- ((1-beta)^(i-1))*beta
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Monthly_Sales_BEANBAG%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:12){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+   a <- C1_Monthly_Sales_BEANBAG%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), month(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Indoor_EMA[j, NCOl+i]<-a
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(month.abb[i])
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_beanbag_m2<-Indoor_EMA%>%
+  mutate(Jan_sea = Jan/Indoor_Sales,
+         Feb_sea = Feb/Indoor_Sales,
+         Mar_sea = Mar/Indoor_Sales,
+         Apr_sea = Apr/Indoor_Sales,
+         May_sea = May/Indoor_Sales,
+         Jun_sea = Jun/Indoor_Sales,
+         Jul_sea = Jul/Indoor_Sales,
+         Aug_sea = Aug/Indoor_Sales,
+         Sep_sea = Sep/Indoor_Sales,
+         Oct_sea = Oct/Indoor_Sales,
+         Nov_sea = Nov/Indoor_Sales,
+         Dec_sea = Dec/Indoor_Sales)%>%
+  filter(month(End_Date)==month(today())-1)%>%
+  select(-(1:4))%>%
+  colMeans()%>%
+  as.data.frame()
+colnames(sea_beanbag_m2)[colnames(sea_beanbag_m2) == "."] <- "Beanbag"
+sea_beanbag_m2 = t(sea_beanbag_m2)
+```
+
+```{r INDOOR FIREPLACE}
+#fireplace seasonality  
+beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(floor_date(today(), "months")-months(12)), min(C1_Monthly_Sales_FIREPLACE$Date), by = "-1 months")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+months(11))
+
+Indoor_EMA$EMA_Weight[length(Indoor_EMA$Start_Date)] <- beta
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    Indoor_EMA$EMA_Weight[i] <- ((1-beta)^(i-1))*beta
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Monthly_Sales_FIREPLACE%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:12){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+   a <- C1_Monthly_Sales_FIREPLACE%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), month(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Indoor_EMA[j, NCOl+i]<-a
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(month.abb[i])
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_fireplace_m2<-Indoor_EMA%>%
+  mutate(Jan_sea = Jan/Indoor_Sales,
+         Feb_sea = Feb/Indoor_Sales,
+         Mar_sea = Mar/Indoor_Sales,
+         Apr_sea = Apr/Indoor_Sales,
+         May_sea = May/Indoor_Sales,
+         Jun_sea = Jun/Indoor_Sales,
+         Jul_sea = Jul/Indoor_Sales,
+         Aug_sea = Aug/Indoor_Sales,
+         Sep_sea = Sep/Indoor_Sales,
+         Oct_sea = Oct/Indoor_Sales,
+         Nov_sea = Nov/Indoor_Sales,
+         Dec_sea = Dec/Indoor_Sales)%>%
+  filter(month(End_Date)==month(today())-1)%>%
+  select(-(1:4))%>%
+  colMeans()%>%
+  as.data.frame()
+colnames(sea_fireplace_m2)[colnames(sea_fireplace_m2) == "."] <- "FIREPLACE"
+sea_fireplace_m2 = t(sea_fireplace_m2)
+```
+
+```{r INDOOR TOP 5}
+#top indoor seasonality  
+#df_names_in <- c("C1_Monthly_Sales_indoor_top1", "C1_Monthly_Sales_indoor_top2", "C1_Monthly_Sales_indoor_top3", "C1_Monthly_Sales_indoor_top4", "C1_Monthly_Sales_indoor_top5")
+s = 1
+for (df_name in df_names_in){
+  current_df <- get(df_name)
+  beta <- 2/(6+1)
+  
+  Start_Date <- seq(as.Date(floor_date(today(), "months")-months(12)), min(current_df$Date), by = "-1 months")
+  
+  
+  Indoor_EMA <- as.data.frame(Start_Date)%>%
+    mutate(End_Date = Start_Date+months(11))
+  
+  Indoor_EMA$EMA_Weight[length(Indoor_EMA$Start_Date)] <- beta
+  
+  for (i in 1: length(Indoor_EMA$Start_Date)){
+      Indoor_EMA$EMA_Weight[i] <- ((1-beta)^(i-1))*beta
+      
+      Indoor_EMA$Indoor_Sales[i] <- 
+        sum(current_df%>%
+        filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+        select(`HM First Cost`))
+  }
+  
+  NCOl <- ncol(Indoor_EMA)
+  
+  for (i in 1:12){
+    
+    for (j in 1:(length(Indoor_EMA$Start_Date))){
+      
+     a <- current_df%>%
+        filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), month(Date)==i)%>%
+        select(`HM First Cost`)
+     if(is.na(as.numeric(a))){
+       a = 0
+     }
+    Indoor_EMA[j, NCOl+i]<-a
+      names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(month.abb[i])
+    }
+  }
+     
+  
+  # for (i in 1:12){
+  #   Indoor_EMA <- Indoor_EMA%>%
+  #     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+  # }
+  
+  data<-Indoor_EMA%>%
+    mutate(Jan_sea = Jan/Indoor_Sales,
+           Feb_sea = Feb/Indoor_Sales,
+           Mar_sea = Mar/Indoor_Sales,
+           Apr_sea = Apr/Indoor_Sales,
+           May_sea = May/Indoor_Sales,
+           Jun_sea = Jun/Indoor_Sales,
+           Jul_sea = Jul/Indoor_Sales,
+           Aug_sea = Aug/Indoor_Sales,
+           Sep_sea = Sep/Indoor_Sales,
+           Oct_sea = Oct/Indoor_Sales,
+           Nov_sea = Nov/Indoor_Sales,
+           Dec_sea = Dec/Indoor_Sales)%>%
+    filter(month(End_Date)==month(today())-1)%>%
+    select(-(1:4))%>%
+    colMeans()%>%
+    as.data.frame()
+  colnames(data)[colnames(data) == "."] <- as.character(top_category_in[s,])
+  data = t(data)
+  assign(paste0("sea_in_top",s,"_m2"),data)
+  s = s + 1
+}
+```
+
+```{r Outdoor OVERALL}
+#outdoor overall 
+beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(floor_date(today(), "months")-months(12)), min(C1_Monthly_Sales$Date), by = "-1 months")
+
+
+Outdoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+months(11))
+
+Outdoor_EMA$EMA_Weight[length(Outdoor_EMA$Start_Date)] <- beta
+
+for (i in 1: length(Outdoor_EMA$Start_Date)){
+    Outdoor_EMA$EMA_Weight[i] <- ((1-beta)^(i-1))*beta
+    
+    Outdoor_EMA$Outdoor_Sales[i] <- 
+      sum(C1_Monthly_Sales%>%
+      filter(Category1 == "OUTDOOR", between(Date, Outdoor_EMA$Start_Date[i], Outdoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Outdoor_EMA)
+
+for (i in 1:12){
+  
+  for (j in 1:length(Outdoor_EMA$Start_Date)){
+    
+    a <- C1_Monthly_Sales%>%
+      filter(Category1 == "OUTDOOR", between(Date, Outdoor_EMA$Start_Date[j], Outdoor_EMA$End_Date[j]), month(Date)==i)%>%
+      select(`HM First Cost`)
+    if(is.na(as.numeric(a))){
+      a = 0
+    }
+  Outdoor_EMA[j, NCOl+i]<-a
+    names(Outdoor_EMA)[ncol(Outdoor_EMA)] <- paste0(month.abb[i])
+  }
+}
+   
+
+# for (i in 1:12){
+#   Outdoor_EMA <- Outdoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Outdoor_Sales`)
+# }
+
+sea_out_overall_m2<-Outdoor_EMA%>%
+  mutate(Jan_sea = Jan/Outdoor_Sales,
+         Feb_sea = Feb/Outdoor_Sales,
+         Mar_sea = Mar/Outdoor_Sales,
+         Apr_sea = Apr/Outdoor_Sales,
+         May_sea = May/Outdoor_Sales,
+         Jun_sea = Jun/Outdoor_Sales,
+         Jul_sea = Jul/Outdoor_Sales,
+         Aug_sea = Aug/Outdoor_Sales,
+         Sep_sea = Sep/Outdoor_Sales,
+         Oct_sea = Oct/Outdoor_Sales,
+         Nov_sea = Nov/Outdoor_Sales,
+         Dec_sea = Dec/Outdoor_Sales)%>%
+  filter(month(End_Date)==month(today())-1)%>%
+  select(-(1:4))%>%
+  colMeans()%>%
+  as.data.frame()
+colnames(sea_out_overall_m2)[colnames(sea_out_overall_m2) == "."] <- "Normal"
+sea_out_overall_m2 = t(sea_out_overall_m2)
+```
+
+```{r Outdoor FIREPIT}
+#outdoor firepit 
+beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(floor_date(today(), "months")-months(12)), min(C1_Monthly_Sales_FIREPIT$Date), by = "-1 months")
+
+
+Outdoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+months(11))
+
+Outdoor_EMA$EMA_Weight[length(Outdoor_EMA$Start_Date)] <- beta
+
+for (i in 1: length(Outdoor_EMA$Start_Date)){
+    Outdoor_EMA$EMA_Weight[i] <- ((1-beta)^(i-1))*beta
+    
+    Outdoor_EMA$Outdoor_Sales[i] <- 
+      sum(C1_Monthly_Sales_FIREPIT%>%
+      filter(Category1 == "OUTDOOR", between(Date, Outdoor_EMA$Start_Date[i], Outdoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Outdoor_EMA)
+
+for (i in 1:12){
+  
+  for (j in 1:length(Outdoor_EMA$Start_Date)){
+    
+    Outdoor_EMA[j, NCOl+i]<- C1_Monthly_Sales_FIREPIT%>%
+      filter(Category1 == "OUTDOOR", between(Date, Outdoor_EMA$Start_Date[j], Outdoor_EMA$End_Date[j]), month(Date)==i)%>%
+      select(`HM First Cost`)
+    names(Outdoor_EMA)[ncol(Outdoor_EMA)] <- paste0(month.abb[i])
+  }
+}
+   
+
+# for (i in 1:12){
+#   Outdoor_EMA <- Outdoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Outdoor_Sales`)
+# }
+
+sea_out_firepit_m2<-Outdoor_EMA%>%
+  mutate(Jan_sea = Jan/Outdoor_Sales,
+         Feb_sea = Feb/Outdoor_Sales,
+         Mar_sea = Mar/Outdoor_Sales,
+         Apr_sea = Apr/Outdoor_Sales,
+         May_sea = May/Outdoor_Sales,
+         Jun_sea = Jun/Outdoor_Sales,
+         Jul_sea = Jul/Outdoor_Sales,
+         Aug_sea = Aug/Outdoor_Sales,
+         Sep_sea = Sep/Outdoor_Sales,
+         Oct_sea = Oct/Outdoor_Sales,
+         Nov_sea = Nov/Outdoor_Sales,
+         Dec_sea = Dec/Outdoor_Sales)%>%
+  filter(month(End_Date)==month(today())-1)%>%
+  select(-(1:4))%>%
+  colMeans()%>%
+  as.data.frame()
+colnames(sea_out_firepit_m2)[colnames(sea_out_firepit_m2) == "."] <- "FIRE PIT"
+sea_out_firepit_m2 = t(sea_out_firepit_m2)
+```
+
+```{r OUTDOOR TOP 5}
+#top outdoor seasonality  
+#df_names_out <- c("C1_Monthly_Sales_outdoor_top1", "C1_Monthly_Sales_outdoor_top2", "C1_Monthly_Sales_outdoor_top3", "C1_Monthly_Sales_outdoor_top4", "C1_Monthly_Sales_outdoor_top5")
+s = 1
+for (df_name in df_names_out){
+  current_df <- get(df_name)
+  beta <- 2/(6+1)
+  
+  Start_Date <- seq(as.Date(floor_date(today(), "months")-months(12)), min(current_df$Date), by = "-1 months")
+  
+  
+  Outdoor_EMA <- as.data.frame(Start_Date)%>%
+    mutate(End_Date = Start_Date+months(11))
+  
+  Outdoor_EMA$EMA_Weight[length(Outdoor_EMA$Start_Date)] <- beta
+  
+  for (i in 1: length(Outdoor_EMA$Start_Date)){
+      Outdoor_EMA$EMA_Weight[i] <- ((1-beta)^(i-1))*beta
+      
+      Outdoor_EMA$Outdoor_Sales[i] <- 
+        sum(current_df%>%
+        filter(Category1 == "OUTDOOR", between(Date, Outdoor_EMA$Start_Date[i], Outdoor_EMA$End_Date[i]))%>%
+        select(`HM First Cost`))
+  }
+  
+  NCOl <- ncol(Outdoor_EMA)
+  
+  for (i in 1:12){
+    
+    for (j in 1:(length(Outdoor_EMA$Start_Date))){
+      
+     a <- current_df%>%
+        filter(Category1 == "OUTDOOR", between(Date, Outdoor_EMA$Start_Date[j], Outdoor_EMA$End_Date[j]), month(Date)==i)%>%
+        select(`HM First Cost`)
+     if(is.na(as.numeric(a))){
+       a = 0
+     }
+    Outdoor_EMA[j, NCOl+i]<-a
+      names(Outdoor_EMA)[ncol(Outdoor_EMA)] <- paste0(month.abb[i])
+    }
+  }
+     
+  
+  # for (i in 1:12){
+  #   Outdoor_EMA <- Outdoor_EMA%>%
+  #     mutate(!!month.abb[i] := pick(month.abb[i])/ `Outdoor_Sales`)
+  # }
+  
+  data<-Outdoor_EMA%>%
+    mutate(Jan_sea = Jan/Outdoor_Sales,
+           Feb_sea = Feb/Outdoor_Sales,
+           Mar_sea = Mar/Outdoor_Sales,
+           Apr_sea = Apr/Outdoor_Sales,
+           May_sea = May/Outdoor_Sales,
+           Jun_sea = Jun/Outdoor_Sales,
+           Jul_sea = Jul/Outdoor_Sales,
+           Aug_sea = Aug/Outdoor_Sales,
+           Sep_sea = Sep/Outdoor_Sales,
+           Oct_sea = Oct/Outdoor_Sales,
+           Nov_sea = Nov/Outdoor_Sales,
+           Dec_sea = Dec/Outdoor_Sales)%>%
+    filter(month(End_Date)==month(today())-1)%>%
+    select(-(1:4))%>%
+    colMeans()%>%
+    as.data.frame()
+  colnames(data)[colnames(data) == "."] <- as.character(top_category_out[s,])
+  data = t(data)
+  assign(paste0("sea_out_top",s,"_m2"),data)
+  s = s + 1
+}
+```
+
+```{r}
+# sea_bean<-data.frame(
+# Jan_sea = 0.07644,
+# Feb_sea = 0.05777,
+# Mar_sea = 0.04528,
+# Apr_sea = 0.04564,
+# May_sea = 0.04493,
+# Jun_sea = 0.06160,
+# Jul_sea = 0.05960,
+# Aug_sea = 0.08689,
+# Sep_sea = 0.07115,
+# Oct_sea = 0.07006,
+# Nov_sea = 0.17028,
+# Dec_sea = 0.21036)
+# rownames(sea_bean)[1]<-"Beanbag"
+
+sea_in<-as.data.frame(rbind(sea_overall_m2, sea_xmas_m2, sea_beanbag_m2, sea_fireplace_m2, sea_in_top1_m2, sea_in_top2_m2, sea_in_top3_m2, sea_in_top4_m2, sea_in_top5_m2))%>%
+  mutate(Category = rownames(.))%>%
+  relocate(Category, .before = Jan)%>%
+  select(-c(2:13))
+sea_out<-as.data.frame(rbind(sea_out_overall_m2, sea_out_firepit_m2, sea_out_top1_m2, sea_out_top2_m2, sea_out_top3_m2, sea_out_top4_m2, sea_out_top5_m2))%>%
+  mutate(Category = rownames(.))%>%
+  relocate(Category, .before = Jan)%>%
+  select(-c(2:13))
+```
+
+```{r}
+wb <- createWorkbook()
+
+# Add data frames as sheets
+addWorksheet(wb, "Indoor sea")
+writeData(wb, "Indoor sea", sea_in,rowNames = FALSE)
+
+addWorksheet(wb, "Outdoor sea")
+writeData(wb, "Outdoor sea", sea_out, rowNames = FALSE)
+
+# Save the Excel workbook
+saveWorkbook(wb, "C:\\Users\\Yulin Pan\\Desktop\\48&12&4\\Oct 2023\\seasonality.xlsx", overwrite = TRUE)
+```
+
+
+```{r weekly seasonality}
+#weekly seasonality calculation
+C1_Weekly_Sales <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  #filter(`Category3` == "CHRISTMAS DECORATION")%>%
+  filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), week(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  #mutate(Date = paste0(`year(orderdate)`,"-", `week(orderdate)`))%>%
+  arrange(Category1, `year(orderdate)`, `week(orderdate)`)
+C1_Weekly_Sales$Date <- ymd(paste0(C1_Weekly_Sales$`year(orderdate)`, "-01-01")) + weeks(C1_Weekly_Sales$`week(orderdate)` - 1)
+
+current_year <- year(today())
+current_week <- week(today())
+
+# Create a date for the start of the year
+start_of_year <- make_date(current_year)
+
+# Calculate the desired date by adding weeks
+desired_date <- start_of_year + weeks(current_week - 1)-weeks(52)
+# # Calculate the start and end weeks for the rolling period
+# rolling_start_week <- (current_week - 2) %% 53
+# rolling_end_week <- (current_week - 1) %% 53
+
+# beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(desired_date), min(make_date(min(C1_Weekly_Sales$`year(orderdate)`)) + weeks(min(C1_Weekly_Sales$`week(orderdate)`) - 1)), by = "-1 week")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+weeks(52))
+  # mutate(Start_Date_num = paste0(year(Start_Date),"-", week(Start_Date)),
+  #        End_Date_num = paste0(year(End_Date),"-", week(End_Date)-1))
+
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Weekly_Sales%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:53){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+   a <- C1_Weekly_Sales%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), week(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Indoor_EMA[j, NCOl+i]<-a
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(i)
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_weekly_m2_in<-Indoor_EMA%>%
+  mutate_at(vars(4:ncol(.)), list(~ . / Indoor_Sales))%>%
+  filter(week(End_Date)==week(today())-1)%>%
+  select(-(1:3))%>%
+  colMeans()%>%
+  as.data.frame()%>%
+  mutate(category1 = "INDOOR")%>%
+  mutate(C32 = "Normal")%>%
+  mutate(orderweek = row_number())
+colnames(sea_weekly_m2_in)[colnames(sea_weekly_m2_in) == "."] <- "Weekly_Weight"
+
+#outdoor weekly
+Outdoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+weeks(52))
+  # mutate(Start_Date_num = paste0(year(Start_Date),"-", week(Start_Date)),
+  #        End_Date_num = paste0(year(End_Date),"-", week(End_Date)-1))
+
+
+for (i in 1: length(Outdoor_EMA$Start_Date)){
+    
+    Outdoor_EMA$Outdoor_Sales[i] <- 
+      sum(C1_Weekly_Sales%>%
+      filter(Category1 == "OUTDOOR", between(Date, Outdoor_EMA$Start_Date[i], Outdoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Outdoor_EMA)
+
+for (i in 1:53){
+  
+  for (j in 1:(length(Outdoor_EMA$Start_Date))){
+    
+   a <- C1_Weekly_Sales%>%
+      filter(Category1 == "OUTDOOR", between(Date, Outdoor_EMA$Start_Date[j], Outdoor_EMA$End_Date[j]), week(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Outdoor_EMA[j, NCOl+i]<-a
+    names(Outdoor_EMA)[ncol(Outdoor_EMA)] <- paste0(i)
+  }
+}
+   
+
+# for (i in 1:12){
+#   Outdoor_EMA <- Outdoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Outdoor_Sales`)
+# }
+
+sea_weekly_m2_out<-Outdoor_EMA%>%
+  mutate_at(vars(4:ncol(.)), list(~ . / Outdoor_Sales))%>%
+  filter(week(End_Date)==week(today())-1)%>%
+  select(-(1:3))%>%
+  colMeans()%>%
+  as.data.frame()%>%
+  mutate(category1 = "OUTDOOR")%>%
+  mutate(C32 = "Normal")%>%
+  mutate(orderweek = row_number())  
+colnames(sea_weekly_m2_out)[colnames(sea_weekly_m2_out) == "."] <- "Weekly_Weight"
+
+```
+
+```{r weekly seasonality}
+#special seasonality calculation
+C1_Weekly_Sales_xmas <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(`Category3` == "CHRISTMAS DECORATION")%>%
+  #filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), week(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  #mutate(Date = paste0(`year(orderdate)`,"-", `week(orderdate)`))%>%
+  arrange(Category1, `year(orderdate)`, `week(orderdate)`)
+C1_Weekly_Sales_xmas$Date <- ymd(paste0(C1_Weekly_Sales_xmas$`year(orderdate)`, "-01-01")) + weeks(C1_Weekly_Sales_xmas$`week(orderdate)` - 1)
+
+current_year <- year(today())
+current_week <- week(today())
+
+# Create a date for the start of the year
+start_of_year <- make_date(current_year)
+
+# Calculate the desired date by adding weeks
+desired_date <- start_of_year + weeks(current_week - 1)-weeks(52)
+# # Calculate the start and end weeks for the rolling period
+# rolling_start_week <- (current_week - 2) %% 53
+# rolling_end_week <- (current_week - 1) %% 53
+
+# beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(desired_date), min(make_date(min(C1_Weekly_Sales_xmas$`year(orderdate)`)) + weeks(min(C1_Weekly_Sales_xmas$`week(orderdate)`) - 1)), by = "-1 week")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+weeks(52))
+  # mutate(Start_Date_num = paste0(year(Start_Date),"-", week(Start_Date)),
+  #        End_Date_num = paste0(year(End_Date),"-", week(End_Date)-1))
+
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Weekly_Sales_xmas%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:53){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+   a <- C1_Weekly_Sales_xmas%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), week(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Indoor_EMA[j, NCOl+i]<-a
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(i)
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_weekly_xmas<-Indoor_EMA%>%
+  mutate_at(vars(4:ncol(.)), list(~ . / Indoor_Sales))%>%
+  filter(week(End_Date)==week(today())-1)%>%
+  select(-(1:3))%>%
+  colMeans()%>%
+  as.data.frame()%>%
+  mutate(category1 = "INDOOR")%>%
+  mutate(C32 = "XMAS")%>%
+  mutate(orderweek = row_number())
+colnames(sea_weekly_xmas)[colnames(sea_weekly_xmas) == "."] <- "Weekly_Weight"
+
+
+C1_Weekly_Sales_beanbag <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(`Category3` == "BEAN BAG")%>%
+  #filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), week(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  #mutate(Date = paste0(`year(orderdate)`,"-", `week(orderdate)`))%>%
+  arrange(Category1, `year(orderdate)`, `week(orderdate)`)
+C1_Weekly_Sales_beanbag$Date <- ymd(paste0(C1_Weekly_Sales_beanbag$`year(orderdate)`, "-01-01")) + weeks(C1_Weekly_Sales_beanbag$`week(orderdate)` - 1)
+
+current_year <- year(today())
+current_week <- week(today())
+
+# Create a date for the start of the year
+start_of_year <- make_date(current_year)
+
+# Calculate the desired date by adding weeks
+desired_date <- start_of_year + weeks(current_week - 1)-weeks(52)
+# # Calculate the start and end weeks for the rolling period
+# rolling_start_week <- (current_week - 2) %% 53
+# rolling_end_week <- (current_week - 1) %% 53
+
+# beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(desired_date), min(make_date(min(C1_Weekly_Sales_beanbag$`year(orderdate)`)) + weeks(min(C1_Weekly_Sales_beanbag$`week(orderdate)`) - 1)), by = "-1 week")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+weeks(52))
+  # mutate(Start_Date_num = paste0(year(Start_Date),"-", week(Start_Date)),
+  #        End_Date_num = paste0(year(End_Date),"-", week(End_Date)-1))
+
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Weekly_Sales_beanbag%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:53){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+   a <- C1_Weekly_Sales_beanbag%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), week(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Indoor_EMA[j, NCOl+i]<-a
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(i)
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_weekly_beanbag<-Indoor_EMA%>%
+  mutate_at(vars(4:ncol(.)), list(~ . / Indoor_Sales))%>%
+  filter(week(End_Date)==week(today())-1)%>%
+  select(-(1:3))%>%
+  colMeans()%>%
+  as.data.frame()%>%
+  mutate(category1 = "INDOOR")%>%
+  mutate(C32 = "Beanbag")%>%
+  mutate(orderweek = row_number())
+colnames(sea_weekly_beanbag)[colnames(sea_weekly_beanbag) == "."] <- "Weekly_Weight"
+
+C1_Weekly_Sales_firepit <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(`Category3` == "FIRE PIT")%>%
+  #filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), week(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  #mutate(Date = paste0(`year(orderdate)`,"-", `week(orderdate)`))%>%
+  arrange(Category1, `year(orderdate)`, `week(orderdate)`)
+C1_Weekly_Sales_firepit$Date <- ymd(paste0(C1_Weekly_Sales_firepit$`year(orderdate)`, "-01-01")) + weeks(C1_Weekly_Sales_firepit$`week(orderdate)` - 1)
+
+current_year <- year(today())
+current_week <- week(today())
+
+# Create a date for the start of the year
+start_of_year <- make_date(current_year)
+
+# Calculate the desired date by adding weeks
+desired_date <- start_of_year + weeks(current_week - 1)-weeks(52)
+# # Calculate the start and end weeks for the rolling period
+# rolling_start_week <- (current_week - 2) %% 53
+# rolling_end_week <- (current_week - 1) %% 53
+
+# beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(desired_date), min(make_date(min(C1_Weekly_Sales_firepit$`year(orderdate)`)) + weeks(min(C1_Weekly_Sales_firepit$`week(orderdate)`) - 1)), by = "-1 week")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+weeks(52))
+  # mutate(Start_Date_num = paste0(year(Start_Date),"-", week(Start_Date)),
+  #        End_Date_num = paste0(year(End_Date),"-", week(End_Date)-1))
+
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Weekly_Sales_firepit%>%
+      filter(Category1 == "OUTDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:53){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+   a <- C1_Weekly_Sales_firepit%>%
+      filter(Category1 == "OUTDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), week(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Indoor_EMA[j, NCOl+i]<-a
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(i)
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_weekly_firepit<-Indoor_EMA%>%
+  mutate_at(vars(4:ncol(.)), list(~ . / Indoor_Sales))%>%
+  filter(week(End_Date)==week(today())-1)%>%
+  select(-(1:3))%>%
+  colMeans()%>%
+  as.data.frame()%>%
+  mutate(category1 = "OUTDOOR")%>%
+  mutate(C32 = "FIRE PIT")%>%
+  mutate(orderweek = row_number())
+colnames(sea_weekly_firepit)[colnames(sea_weekly_firepit) == "."] <- "Weekly_Weight"
+
+
+C1_Weekly_Sales_fireplace <- HM_Ordered_Sales%>%
+  filter(!grepl(".CA", merchantname, fixed = TRUE))%>%
+  filter(!grepl(".UK", merchantname, fixed = TRUE))%>%
+  filter(`Category3` == "FIREPLACE")%>%
+  #filter(`Category3-2` != "X-MAS TREES" & `Category3-2` != "FIREPLACE" & `Category3-2` != "FIRE PIT" & `Category3` != "BEAN BAG")%>%
+  filter(!c(merchantname == "WALMARTDIRECT" & orderdate == as.Date("2022-11-20")))%>%
+  filter(between(orderdate, as.Date("2017-01-01"), end_date))%>%
+  group_by(Category1, year(orderdate), week(orderdate))%>%
+  summarise_at(vars(`HM First Cost`), sum)%>%
+  ungroup()%>%
+  filter(Category1 == "INDOOR" | Category1 == "OUTDOOR")%>%
+  #mutate(Date = paste0(`year(orderdate)`,"-", `week(orderdate)`))%>%
+  arrange(Category1, `year(orderdate)`, `week(orderdate)`)
+C1_Weekly_Sales_fireplace$Date <- ymd(paste0(C1_Weekly_Sales_fireplace$`year(orderdate)`, "-01-01")) + weeks(C1_Weekly_Sales_fireplace$`week(orderdate)` - 1)
+
+current_year <- year(today())
+current_week <- week(today())
+
+# Create a date for the start of the year
+start_of_year <- make_date(current_year)
+
+# Calculate the desired date by adding weeks
+desired_date <- start_of_year + weeks(current_week - 1)-weeks(52)
+# # Calculate the start and end weeks for the rolling period
+# rolling_start_week <- (current_week - 2) %% 53
+# rolling_end_week <- (current_week - 1) %% 53
+
+# beta <- 2/(6+1)
+
+Start_Date <- seq(as.Date(desired_date), min(make_date(min(C1_Weekly_Sales_fireplace$`year(orderdate)`)) + weeks(min(C1_Weekly_Sales_fireplace$`week(orderdate)`) - 1)), by = "-1 week")
+
+
+Indoor_EMA <- as.data.frame(Start_Date)%>%
+  mutate(End_Date = Start_Date+weeks(52))
+  # mutate(Start_Date_num = paste0(year(Start_Date),"-", week(Start_Date)),
+  #        End_Date_num = paste0(year(End_Date),"-", week(End_Date)-1))
+
+
+for (i in 1: length(Indoor_EMA$Start_Date)){
+    
+    Indoor_EMA$Indoor_Sales[i] <- 
+      sum(C1_Weekly_Sales_fireplace%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[i], Indoor_EMA$End_Date[i]))%>%
+      select(`HM First Cost`))
+}
+
+NCOl <- ncol(Indoor_EMA)
+
+for (i in 1:53){
+  
+  for (j in 1:(length(Indoor_EMA$Start_Date))){
+    
+   a <- C1_Weekly_Sales_fireplace%>%
+      filter(Category1 == "INDOOR", between(Date, Indoor_EMA$Start_Date[j], Indoor_EMA$End_Date[j]), week(Date)==i)%>%
+      select(`HM First Cost`)
+   if(is.na(as.numeric(a))){
+     a = 0
+   }
+  Indoor_EMA[j, NCOl+i]<-a
+    names(Indoor_EMA)[ncol(Indoor_EMA)] <- paste0(i)
+  }
+}
+   
+
+# for (i in 1:12){
+#   Indoor_EMA <- Indoor_EMA%>%
+#     mutate(!!month.abb[i] := pick(month.abb[i])/ `Indoor_Sales`)
+# }
+
+sea_weekly_fireplace<-Indoor_EMA%>%
+  mutate_at(vars(4:ncol(.)), list(~ . / Indoor_Sales))%>%
+  filter(week(End_Date)==week(today())-1)%>%
+  select(-(1:3))%>%
+  colMeans()%>%
+  as.data.frame()%>%
+  mutate(category1 = "INDOOR")%>%
+  mutate(C32 = "FIREPLACE")%>%
+  mutate(orderweek = row_number())
+colnames(sea_weekly_fireplace)[colnames(sea_weekly_fireplace) == "."] <- "Weekly_Weight"
+
+sea_weekly_m2<-sea_weekly_m2_in%>%
+  rbind(sea_weekly_m2_out,sea_weekly_xmas, sea_weekly_beanbag, sea_weekly_firepit, sea_weekly_fireplace)
+
+sea_weekly_m2_indoor<-sea_weekly_m2%>%
+  filter(category1 == "INDOOR")
+sea_weekly_m2_outdoor<-sea_weekly_m2%>%
+  filter(category1 == "OUTDOOR")
+```
+
+```{r}
+wb <- createWorkbook()
+
+# Add data frames as sheets
+addWorksheet(wb, "Sheet1")
+writeData(wb, "Sheet1", sea_weekly_m2_indoor, rowNames = FALSE)
+
+# Save the Excel workbook
+saveWorkbook(wb, "C:\\Users\\Yulin Pan\\Desktop\\woh calculation files\\Seasonality_in.xlsx", overwrite = TRUE)
+
+wb <- createWorkbook()
+
+# Add data frames as sheets
+addWorksheet(wb, "Sheet1")
+writeData(wb, "Sheet1", sea_weekly_m2_outdoor, rowNames = FALSE)
+
+# Save the Excel workbook
+saveWorkbook(wb, "C:\\Users\\Yulin Pan\\Desktop\\woh calculation files\\Seasonality_out.xlsx", overwrite = TRUE)
+```
+
+
+
+
+
+
+
+
+
